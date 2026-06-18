@@ -5,21 +5,34 @@ Sequoia-X 选股策略：双指标合击当天收盘成交版 (CB_Combo_v6_Ultim
 
 import numpy as np
 import pandas as pd
+# 1. 引入原作者的基类
+from sequoia_x.strategy.base import BaseStrategy
 
 
-class CbComboV6UltimateStrategy:
+# 2. 让你的类继承 BaseStrategy
+class CbComboV6UltimateStrategy(BaseStrategy):
     """双指标合击策略：Squeeze 动量修复 + Vix 恐慌见底 (0轴下方纯金叉选股版)"""
     
     def __init__(
         self, 
+        engine,          # 接收数据引擎
+        settings,        # 接收配置参数
         lengthKC: int = 20, 
         multKC: float = 1.5, 
         lengthBB: int = 20, 
         multBB: float = 2.0,
         pd_vix: int = 22, 
         bbl_vix: int = 20, 
-        vixMult: float = 2.0
+        vixMult: float = 2.0,
+        **kwargs         # 接收可能的其他参数
     ):
+        # 3. 必须通过 super() 初始化父类，这样你后续就能在类里直接使用 self.engine 和 self.settings 了
+        super().__init__(engine, settings, **kwargs)
+        
+        # 如果你想为这个策略单独指定飞书通知群，可以解开下面这行的注释（填入 .env 里对应的 key）
+        # self.webhook_key = "cb_combo_webhook"
+        
+        # 保持你原有的技术指标参数
         self.lengthKC = lengthKC
         self.multKC = multKC
         self.lengthBB = lengthBB
