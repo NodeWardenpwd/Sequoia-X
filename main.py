@@ -71,6 +71,7 @@ def main() -> None:
             UptrendLimitDownStrategy(engine=engine, settings=settings),
             RpsBreakoutStrategy(engine=engine, settings=settings),
             PrivatePlacementStrategy(engine=engine, settings=settings),
+            CbComboV6UltimateStrategy(engine=engine, settings=settings),
         ]
 
         notifier = FeishuNotifier(settings)
