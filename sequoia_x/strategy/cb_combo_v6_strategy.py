@@ -5,18 +5,16 @@ Sequoia-X 选股策略：双指标合击当天收盘成交版 (CB_Combo_v6_Ultim
 
 import numpy as np
 import pandas as pd
-# 1. 引入原作者的基类
 from sequoia_x.strategy.base import BaseStrategy
 
 
-# 2. 让你的类继承 BaseStrategy
 class CbComboV6UltimateStrategy(BaseStrategy):
     """双指标合击策略：Squeeze 动量修复 + Vix 恐慌见底 (0轴下方纯金叉选股版)"""
     
     def __init__(
         self, 
-        engine,          # 接收数据引擎
-        settings,        # 接收配置参数
+        engine, 
+        settings, 
         lengthKC: int = 20, 
         multKC: float = 1.5, 
         lengthBB: int = 20, 
@@ -24,15 +22,9 @@ class CbComboV6UltimateStrategy(BaseStrategy):
         pd_vix: int = 22, 
         bbl_vix: int = 20, 
         vixMult: float = 2.0,
-        **kwargs         # 接收可能的其他参数
+        **kwargs
     ):
-        # 3. 必须通过 super() 初始化父类，这样你后续就能在类里直接使用 self.engine 和 self.settings 了
         super().__init__(engine, settings, **kwargs)
-        
-        # 如果你想为这个策略单独指定飞书通知群，可以解开下面这行的注释（填入 .env 里对应的 key）
-        # self.webhook_key = "cb_combo_webhook"
-        
-        # 保持你原有的技术指标参数
         self.lengthKC = lengthKC
         self.multKC = multKC
         self.lengthBB = lengthBB
@@ -58,7 +50,6 @@ class CbComboV6UltimateStrategy(BaseStrategy):
         if df is None or len(df) < max(self.lengthKC, self.pd_vix, self.bbl_vix) + 10:
             return False
 
-        # 统一将K线字段转为小写，防止报错
         df = df.copy()
         df.columns = [col.lower() for col in df.columns]
         
@@ -76,7 +67,6 @@ class CbComboV6UltimateStrategy(BaseStrategy):
         custom_avg = ((highest_high_kc + lowest_low_kc) / 2.0 + sma_close_kc) / 2.0
         reg_source = close - custom_avg
         
-        # 滚动计算线性回归快线 (fastLine)
         fast_line_list = []
         for i in range(len(df)):
             if i < self.lengthKC:
@@ -85,7 +75,6 @@ class CbComboV6UltimateStrategy(BaseStrategy):
                 fast_line_list.append(self._linear_regression_value(reg_source.iloc[:i+1], self.lengthKC))
                 
         df['fast_line'] = fast_line_list
-        # 慢线 = ta.ema(快线, 9)
         df['slow_line'] = df['fast_line'].ewm(span=9, adjust=False).mean()
 
         # ==========================================
@@ -104,28 +93,42 @@ class CbComboV6UltimateStrategy(BaseStrategy):
         # ==========================================
         has_prepared = False
         
-        # 仅对最近的K线进行状态回溯，确保选股的即时性
         for idx in range(len(df) - 10, len(df)):
             row_today = df.iloc[idx]
             row_yesterday = df.iloc[idx-1]
             
-            # 判断今天是否金叉：昨天快线 <= 慢线，今天快线 > 慢线
             gc_cross = (row_yesterday['fast_line'] <= row_yesterday['slow_line']) and (row_today['fast_line'] > row_today['slow_line'])
-            
-            # 判断威廉恐慌触发（刚冲破布林上轨）
             vix_signal = row_today['is_vix_crit'] and not row_yesterday['is_vix_crit']
             
             if vix_signal:
                 has_prepared = True
             
-            # 到了最新的一根K线（即今天收盘），判定是否符合选股条件推送
             if idx == len(df) - 1:
-                # 核心逻辑：必须是今天刚金叉、且快线在0轴以下安全区、且此前有恐慌砸盘的基础
                 if gc_cross and has_prepared and row_today['fast_line'] < 0:
                     return True
                     
             if gc_cross:
-                # 一旦发生金叉，无论是否完全符合，重置准备状态
                 has_prepared = False
                 
         return False
+
+    def run(self) -> list[str]:
+        """
+        实现基类要求的抽象方法，核心的选股循环调度
+        """
+        selected_symbols = []
+        # 从父类继承的 self.engine 获取全市场股票代码
+        all_symbols = self.engine.get_all_symbols()
+        
+        for symbol in all_symbols:
+            try:
+                # 从数据库读取单只股票的历史K线
+                df = self.engine.get_kline(symbol)
+                # 调用你写好的信号判断函数
+                if self.check_signal(df):
+                    selected_symbols.append(symbol)
+            except Exception:
+                # 某只股票计算出错时跳过，防止中断全市场扫描
+                continue
+                
+        return selected_symbols
