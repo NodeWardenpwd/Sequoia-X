@@ -1,6 +1,6 @@
 """
 Sequoia-X 选股策略：双指标合击当天收盘成交版 (CB_Combo_v6_Ultimate)
-【完美修复对接底座 + 连续2天差值缩小逼近0轴版】
+【完美修复：加入底座必需的 run 函数 + 连续2天差值缩小逼近0轴版】
 """
 
 import numpy as np
@@ -23,8 +23,9 @@ class CbComboV6UltimateStrategy(BaseStrategy):
         bbl_vix: int = 20, 
         vixMult: float = 2.0
     ):
-        # 1. 正确初始化父类底座，完美解决 engine 参数报错
+        # 1. 初始化父类底座
         super().__init__(engine=engine, settings=settings)
+        # 对齐飞书推送路由关键字
         self.webhook_key = "default" 
         
         # 2. 绑定参数
@@ -47,16 +48,11 @@ class CbComboV6UltimateStrategy(BaseStrategy):
 
     def check_signal(self, df: pd.DataFrame) -> bool:
         """
-        核心信号判定：
-        1. 此前有威廉恐慌触发（has_prepared）
-        2. 今天快线依然在0轴下方安全区
-        3. 快慢线绝对差值（动能柱）连续 2 天变小
-        4. 快线连续 2 天接近0轴（即快线值越来越大，或者维持不跌，拒绝向下恶化）
+        核心信号判定：连续 2 天动能差值缩小且快线逼近 0 轴
         """
         if df is None or len(df) < max(self.lengthKC, self.pd_vix, self.bbl_vix) + 10:
             return False
 
-        # 统一将K线字段转为小写
         df = df.copy()
         df.columns = [col.lower() for col in df.columns]
         
@@ -64,9 +60,7 @@ class CbComboV6UltimateStrategy(BaseStrategy):
         high = df['high']
         low = df['low']
         
-        # ==========================================
-        # 1. Squeeze Momentum 快慢线核心计算
-        # ==========================================
+        # 1. Squeeze Momentum 计算
         highest_high_kc = high.rolling(window=self.lengthKC).max()
         lowest_low_kc = low.rolling(window=self.lengthKC).min()
         sma_close_kc = close.rolling(window=self.lengthKC).mean()
@@ -74,7 +68,6 @@ class CbComboV6UltimateStrategy(BaseStrategy):
         custom_avg = ((highest_high_kc + lowest_low_kc) / 2.0 + sma_close_kc) / 2.0
         reg_source = close - custom_avg
         
-        # 滚动计算线性回归快线
         fast_line_list = []
         for i in range(len(df)):
             if i < self.lengthKC:
@@ -84,13 +77,9 @@ class CbComboV6UltimateStrategy(BaseStrategy):
                 
         df['fast_line'] = fast_line_list
         df['slow_line'] = df['fast_line'].ewm(span=9, adjust=False).mean()
-        
-        # 计算快慢线的绝对差值（动能柱高度）
         df['current_diff'] = (df['fast_line'] - df['slow_line']).abs()
 
-        # ==========================================
-        # 2. Williams Vix Fix 恐慌指标计算
-        # ==========================================
+        # 2. Williams Vix Fix 计算
         highest_close_vix = close.rolling(window=self.pd_vix).max()
         df['wvf'] = ((highest_close_vix - low) / highest_close_vix) * 100.0
         
@@ -99,36 +88,27 @@ class CbComboV6UltimateStrategy(BaseStrategy):
         vix_upper = vix_mid + self.vixMult * vix_sdev
         df['is_vix_crit'] = df['wvf'] >= vix_upper
 
-        # ==========================================
-        # 3. 状态机追踪与【连续2天缩小接近0】信号判定
-        # ==========================================
+        # 3. 状态判定
         has_prepared = False
-        
-        # 回溯过去15天的状态
         for idx in range(len(df) - 15, len(df)):
             row_today = df.iloc[idx]
             row_yesterday = df.iloc[idx-1]
             row_2days_ago = df.iloc[idx-2]
             
-            # 判断威廉恐慌触发
             vix_signal = row_today['is_vix_crit'] and not row_yesterday['is_vix_crit']
             if vix_signal:
                 has_prepared = True
             
-            # 一旦发生金叉，说明左侧筑底阶段完成，重置准备状态
             gc_cross = (row_yesterday['fast_line'] <= row_yesterday['slow_line']) and (row_today['fast_line'] > row_today['slow_line'])
             if gc_cross:
                 has_prepared = False
                 
-            # 到了最新的一根K线（即今天收盘）
             if idx == len(df) - 1:
                 if has_prepared and row_today['fast_line'] < 0:
-                    
-                    # 条件1：快慢线的绝对差值连续2天缩小 (今天 < 昨天 < 前天)
+                    # 动能连续2天缩小
                     diff_shrunk_2days = (row_today['current_diff'] < row_yesterday['current_diff']) and \
                                         (row_yesterday['current_diff'] < row_2days_ago['current_diff'])
-                    
-                    # 条件2：快线连续2天往0轴逼近 (由于是负数，逼近0轴意味着数值变大或持平)
+                    # 快线连续2天往0轴靠拢
                     fast_moving_to_zero = (row_today['fast_line'] >= row_yesterday['fast_line']) and \
                                           (row_yesterday['fast_line'] >= row_2days_ago['fast_line'])
                     
@@ -136,3 +116,24 @@ class CbComboV6UltimateStrategy(BaseStrategy):
                         return True
                         
         return False
+
+    def run(self) -> list[str]:
+        """
+        【核心补全】：实现底座抽象方法，遍历全市场股票执行筛选
+        """
+        selected_symbols = []
+        # 从底座引擎获取当前参与计算的所有股票代码
+        all_symbols = self.engine.get_all_symbols()
+        
+        for symbol in all_symbols:
+            try:
+                # 获取单只股票的K线数据
+                df = self.engine.get_kline(symbol)
+                if df is not None and not df.empty:
+                    # 传入 check_signal 进行核心数学计算
+                    if self.check_signal(df):
+                        selected_symbols.append(symbol)
+            except Exception:
+                continue
+                
+        return selected_symbols
