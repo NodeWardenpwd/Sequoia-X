@@ -1,6 +1,6 @@
 """
 Sequoia-X 选股策略：双指标合击当天收盘成交版 (CB_Combo_v6_Ultimate)
-【最新修改：左侧动能连续2天收缩接近0轴版】
+【完美修复对接底座 + 连续2天差值缩小逼近0轴版】
 """
 
 import numpy as np
@@ -9,7 +9,7 @@ from sequoia_x.strategy.base import BaseStrategy
 
 
 class CbComboV6UltimateStrategy(BaseStrategy):
-    """双指标合击策略：Squeeze 动量修复 + Vix 恐慌见底 (0轴下方差值连续2天缩小版)"""
+    """双指标合击策略：Squeeze 动量修复 + Vix 恐慌见底 (完全融入框架 + 0轴下方差值连续2天缩小)"""
     
     def __init__(
         self, 
@@ -23,8 +23,11 @@ class CbComboV6UltimateStrategy(BaseStrategy):
         bbl_vix: int = 20, 
         vixMult: float = 2.0
     ):
+        # 1. 正确初始化父类底座，完美解决 engine 参数报错
         super().__init__(engine=engine, settings=settings)
         self.webhook_key = "default" 
+        
+        # 2. 绑定参数
         self.lengthKC = lengthKC
         self.multKC = multKC
         self.lengthBB = lengthBB
@@ -48,7 +51,7 @@ class CbComboV6UltimateStrategy(BaseStrategy):
         1. 此前有威廉恐慌触发（has_prepared）
         2. 今天快线依然在0轴下方安全区
         3. 快慢线绝对差值（动能柱）连续 2 天变小
-        4. 快线连续 2 天接近0轴（即快线不能在恶化下跌，必须是在往上走或横盘修复）
+        4. 快线连续 2 天接近0轴（即快线值越来越大，或者维持不跌，拒绝向下恶化）
         """
         if df is None or len(df) < max(self.lengthKC, self.pd_vix, self.bbl_vix) + 10:
             return False
@@ -82,7 +85,7 @@ class CbComboV6UltimateStrategy(BaseStrategy):
         df['fast_line'] = fast_line_list
         df['slow_line'] = df['fast_line'].ewm(span=9, adjust=False).mean()
         
-        # 计算快慢线的绝对差值（即动能柱的绝对高度）
+        # 计算快慢线的绝对差值（动能柱高度）
         df['current_diff'] = (df['fast_line'] - df['slow_line']).abs()
 
         # ==========================================
@@ -112,22 +115,20 @@ class CbComboV6UltimateStrategy(BaseStrategy):
             if vix_signal:
                 has_prepared = True
             
-            # 一旦发生金叉，说明左侧筑底阶段结束，重置准备状态
+            # 一旦发生金叉，说明左侧筑底阶段完成，重置准备状态
             gc_cross = (row_yesterday['fast_line'] <= row_yesterday['slow_line']) and (row_today['fast_line'] > row_today['slow_line'])
             if gc_cross:
                 has_prepared = False
                 
-            # 到了最新的一根K线（即今天收盘），判定是否满足你的硬核左侧买入条件
+            # 到了最新的一根K线（即今天收盘）
             if idx == len(df) - 1:
                 if has_prepared and row_today['fast_line'] < 0:
                     
-                    # 条件1：快慢线的绝对差值连续2天缩小
-                    # 昨天比前天小，且今天比昨天还小
+                    # 条件1：快慢线的绝对差值连续2天缩小 (今天 < 昨天 < 前天)
                     diff_shrunk_2days = (row_today['current_diff'] < row_yesterday['current_diff']) and \
                                         (row_yesterday['current_diff'] < row_2days_ago['current_diff'])
                     
-                    # 条件2：快线在0轴以下，且连续2天往0轴逼近（即快线值越来越大，或者维持不跌）
-                    # 昨天的快线 >= 前天，且今天的快线 >= 昨天
+                    # 条件2：快线连续2天往0轴逼近 (由于是负数，逼近0轴意味着数值变大或持平)
                     fast_moving_to_zero = (row_today['fast_line'] >= row_yesterday['fast_line']) and \
                                           (row_yesterday['fast_line'] >= row_2days_ago['fast_line'])
                     
